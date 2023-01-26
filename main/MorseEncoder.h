@@ -7,7 +7,7 @@
 */
 #pragma once
 #include "morseCode.h"
-class MorseEncoder {
+class MorseEncoderFSM {
 private:
   enum : uint8_t {
     MAIN,
@@ -19,11 +19,14 @@ private:
     WORD_DELAY,
   } lastState,
     state = MAIN;
-  String mess;
+  char* arrPtr;
+  uint16_t arrLen;
   uint16_t currentCharIndex;
-  bool isBusy;
+  bool isBusy, signal;
   uint8_t OutputPin;
   uint16_t DotDelay;
+  void updateSignal(bool);
+
   void mainState(uint16_t&);
   void charState(uint16_t&);
   void dotState(uint32_t&);
@@ -33,36 +36,36 @@ private:
   void wordDelayState(uint32_t&);
 
 public:
-  MorseEncoder(uint8_t, uint16_t);
-  void begin();
+  void begin(uint16_t, uint8_t);
   void update(bool);
-  void send(String);
+  void send(char*, uint16_t);
+  bool getSignal();
 };
 
-void MorseEncoder::mainState(uint16_t& dataIndex) {
+void MorseEncoderFSM::mainState(uint16_t& dataIndex) {
   if (state != lastState) {
     lastState = state;
-    if (currentCharIndex == mess.length()) {
+    if (currentCharIndex == arrLen) {
       state = WORD_DELAY;
       currentCharIndex++;
-    } else if (currentCharIndex == mess.length() + 1) {
-#if (MORSE_SERIAL_OUTPUT == 1)
+    } else if (currentCharIndex == arrLen + 1) {
+#ifdef MORSE_SERIAL_OUTPUT
       Serial.println();
 #endif
       isBusy = false;
     };
   }
-  if (currentCharIndex < mess.length()) {
-    if (mess[currentCharIndex] == ' ') state = WORD_DELAY;
+  if (currentCharIndex < arrLen) {
+    if (arrPtr[currentCharIndex] == ' ') state = WORD_DELAY;
     else {
-      dataIndex = mess[currentCharIndex] - (mess[currentCharIndex] < 57 ? 22 : 97);
+      dataIndex = arrPtr[currentCharIndex] - (arrPtr[currentCharIndex] < 57 ? 22 : 97);
       state = CHR;
     }
     currentCharIndex++;
   }
 }
 
-void MorseEncoder::charState(uint16_t& dataIndex) {
+void MorseEncoderFSM::charState(uint16_t& dataIndex) {
   static int bitIndex;
   if (state != lastState) {
     if (lastState == MAIN) bitIndex = lenArr[dataIndex];
@@ -73,80 +76,84 @@ void MorseEncoder::charState(uint16_t& dataIndex) {
     state = bitRead(pgm_read_byte(&dataArr[dataIndex]), bitIndex) ? DASH : DOT;
   } else state = CHAR_DELAY;
 }
-
-void MorseEncoder::dotState(uint32_t& startMillis) {
+void MorseEncoderFSM::updateSignal(bool newState) {
+  signal = newState;
+#ifdef MORSE_PIN_OUTPUT
+  digitalWrite(OutputPin, signal);
+#endif
+}
+void MorseEncoderFSM::dotState(uint32_t& startMillis) {
   if (state != lastState) {
     lastState = state;
     startMillis = millis();
-#if (MORSE_SERIAL_OUTPUT == 1)
+#ifdef MORSE_SERIAL_OUTPUT
     Serial.print("DOT");
 #endif
-    digitalWrite(OutputPin, 0x01);
+    updateSignal(0x1);
   }
   if (millis() - startMillis >= DotDelay) {
-    digitalWrite(OutputPin, 0x00);
+    updateSignal(0x0);
     state = SHORT_DELAY;
   }
 };
 
-void MorseEncoder::dashState(uint32_t& startMillis) {
+void MorseEncoderFSM::dashState(uint32_t& startMillis) {
   if (state != lastState) {
     lastState = state;
     startMillis = millis();
-#if (MORSE_SERIAL_OUTPUT == 1)
+#ifdef MORSE_SERIAL_OUTPUT
     Serial.print("DASH");
 #endif
-    digitalWrite(OutputPin, 0x01);
+    updateSignal(0x1);
   }
   if (millis() - startMillis >= DotDelay * 3) {
-    digitalWrite(OutputPin, 0x00);
+    updateSignal(0x0);
     state = SHORT_DELAY;
   }
 }
 
-void MorseEncoder::shortDelayState(uint32_t& startMillis) {
+void MorseEncoderFSM::shortDelayState(uint32_t& startMillis) {
   if (state != lastState) {
     lastState = state;
     startMillis = millis();
-#if (MORSE_SERIAL_OUTPUT == 1)
+#ifdef MORSE_SERIAL_OUTPUT
     Serial.print("-");
 #endif
   }
   if (millis() - startMillis >= DotDelay) state = CHR;
 }
 
-void MorseEncoder::charDelayState(uint32_t& startMillis) {
+void MorseEncoderFSM::charDelayState(uint32_t& startMillis) {
   if (state != lastState) {
     lastState = state;
     startMillis = millis();
-#if (MORSE_SERIAL_OUTPUT == 1)
+#ifdef MORSE_SERIAL_OUTPUT
     Serial.print(">");
 #endif
   }
   if (millis() - startMillis >= DotDelay << 1) state = MAIN;
 }
 
-void MorseEncoder::wordDelayState(uint32_t& startMillis) {
+void MorseEncoderFSM::wordDelayState(uint32_t& startMillis) {
   if (state != lastState) {
     lastState = state;
     startMillis = millis();
-#if (MORSE_SERIAL_OUTPUT == 1)
+#ifdef MORSE_SERIAL_OUTPUT
     Serial.print("==");
 #endif
   }
   if (millis() - startMillis >= DotDelay << 2) state = MAIN;
 }
-
-MorseEncoder::MorseEncoder(uint8_t pin = 13, uint16_t speed = 100) {
+void MorseEncoderFSM::begin(uint16_t speed = 100, uint8_t pin = 13) {
+  state = MAIN;
   OutputPin = pin;
   DotDelay = speed;
-};
-void MorseEncoder::begin() {
+#ifdef MORSE_PIN_OUTPUT
   pinMode(OutputPin, OUTPUT);
-  state = MAIN;
+#endif
 }
 
-void MorseEncoder::update(bool newMess = false) {
+void MorseEncoderFSM::update(bool newMess = false) {
   static uint32_t stateMillis;
   static uint16_t dataIndex;
   switch (state) {
@@ -173,10 +180,15 @@ void MorseEncoder::update(bool newMess = false) {
       break;
   }
 }
-void MorseEncoder::send(String message) {
+void MorseEncoderFSM::send(char* charArr, uint16_t size) {
   if (!isBusy) {
     isBusy = true;
-    mess = message;
+    arrPtr = charArr;
+    arrLen = size - 1;
     currentCharIndex = 0;
   }
 }
+bool MorseEncoderFSM::getSignal() {
+  return signal;
+};
+extern MorseEncoderFSM MorseEncoder = MorseEncoderFSM();
